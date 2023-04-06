@@ -501,43 +501,42 @@ class Lightning_module(pl.LightningModule):
 
 
     def _epoch_end(self,step_outputs):
-        lst = []
-        lst_y= []
+        # lst = []
+        # lst_y= []
+        y_collection = None
+        y_hat_collection = None
         for i in step_outputs:
-            lst+=list(np.squeeze(np.array(i["y_hat"]), axis=1))
-            lst_y+=list(np.squeeze(np.array(i["y"]),axis = 1))
-        step_outputs = np.array(lst)
-        step_y = np.array(lst_y)
-        return step_outputs, step_y
+            if y_collection is None:
+                y_collection = i["y"]
+                y_hat_collection = i["y_hat"]
+            else:
+                y_collection = torch.cat((y_collection,i["y"]),dim=0)
+                y_hat_collection = torch.cat((y_hat_collection,i["y_hat"]),dim=0)
+
+            # lst+=list(np.squeeze(np.array(i["y_hat"]), axis=1))
+            # lst_y+=list(np.squeeze(np.array(i["y"]),axis = 1))
+        # step_outputs = np.array(lst)
+        # step_y = np.array(lst_y)
+        return y_hat_collection,y_collection
 
                     
     def validation_epoch_end(self, step_outputs):
         print("---------------validation epoch end------------------")
-        step_pred,step_y = self._epoch_end(step_outputs)
+        step_pred,step_y= self._epoch_end(step_outputs)
 
         print("validation splicing site number {}".format(step_y.shape))
         print("validation evaluation ")
-        self.evaluate(step_pred, step_y)
-        np.savetxt("valid.csv",np.vstack((step_pred,step_y)).transpose(), delimiter=",", fmt='%s')
-        return
+        loss = self.loss_func(step_pred,step_y)
+        self.evaluate(step_pred.numpy().squeeze(), step_y.numpy().squeeze())
+        
+        # np.savetxt("valid.csv",np.vstack((step_pred,step_y)).transpose(), delimiter=",", fmt='%s')
+        return {"val_loss":loss}
     
     
     
     def training_epoch_end(self,step_outputs):
         print("---------------training epoch end------------------")
         step_pred,step_y = self._epoch_end(step_outputs)
-
-        # lst = []
-        # lst_y= []
-        # for i in step_outputs:
-        #     j = np.array(i["y_hat"])
-        #     j = np.squeeze(j)
-        #     # print(j.type)
-        #     # print(j.shape)
-        #     lst+=list(j)
-        #     lst_y+=list(np.squeeze(np.array(i["y"])))
-        # step_outputs = np.array(lst)
-        # step_y = np.array(lst_y)
 
         print("training splicing site number {}".format(step_y.shape))
         # print(np.count_nonzero(step_y==0))

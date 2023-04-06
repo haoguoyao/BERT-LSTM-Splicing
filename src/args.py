@@ -2,7 +2,7 @@ import argparse
 
 
 
-def get_args():
+def get_parser():
     parser = argparse.ArgumentParser(description="Just an example",
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
@@ -15,6 +15,8 @@ def get_args():
     # For the mix structure
     # parser.add_argument("--multi_model", action="store_true",default=False)
     parser.add_argument('--histone', default='all', choices=['core', 'all','none'])
+    parser.add_argument('--mode', default='main', choices=['main', 'ray_tune'])
+
     parser.add_argument("--exclude_xy", action="store_true",default=False)
     parser.add_argument('--model', choices=['multi','single'])
     parser.add_argument('--single_site_type', default='RNN', choices=['RNN', 'SpliceBERT'])
@@ -48,18 +50,19 @@ def get_args():
     # parser.add_argument("--data_path",type=str,default="/rhome/ghao004/bigdata/lstm_splicing/single_site_dataset_plus/")
     # parser.add_argument("--data_path",type=str,default="/rhome/ghao004/bigdata/lstm_splicing/single_site_dataset_512_classify_correct2/")
     
-    _args = parser.parse_args()
-    if _args.task == 'reg':
-        _args.dropout = 0.0
+
 
 
     
     
-    return _args
+    return parser
 
 
 
-args = get_args()
+parser = get_parser()
+args, unknown = parser.parse_known_args()
+if args.task == 'reg':
+    args.dropout = 0.0
 
 
-# print(args)
+
