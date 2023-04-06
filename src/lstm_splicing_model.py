@@ -56,17 +56,22 @@ class Single_site_model(pl.LightningModule):
         self.linear1 = nn.Linear(hidden_size*input_length,1)
         self.sigmoid = nn.Sigmoid()
         self.dropout = nn.Dropout(p=dropout)
-    def forward_single_site_model(self,x,seq):
+
+    def forward_single_site_model(self,x):
+
+        DNA_seq = x["DNA_seq"]
+        histone_mark = x["histone_mark"]
+        raw_seq = x["raw_seq"]
         if args.single_site_type=="RNN":
-            return self.single_site_module(x)
+            rnn_input = torch.concatenate((histone_mark, DNA_seq), axis = 1)
+            rnn_input = torch.transpose(rnn_input, 1, 2)
+            return self.single_site_module(rnn_input)
         if args.single_site_type=="SpliceBERT":
-            return self.single_site_module(seq)
-
+            return self.single_site_module(raw_seq,histone_mark)
         return None
-    def forward(self,x,seq = None):
-        x = torch.transpose(x, 1, 2)
-
-        output = self.forward_single_site_model(x,seq)
+        
+    def forward(self,x):
+        output = self.forward_single_site_model(x)
         output = torch.flatten(output,start_dim=1)
         output = self.dropout(output)
         output = self.linear1(output)
@@ -168,8 +173,7 @@ class Self_attention(nn.Module):
         out = torch.squeeze(out)
         # print(torch.einsum("nqhd,nhqjd->nhqj",[Q,relative_position_K]).shape)
         return out,None
-        # return out,torch.softmax(attention_relation[:,:,1:,1:],dim=3)
-        # return out,torch.softmax(attention_relation[:,:,1:,1:]/ (self.embed_dim**(1/2)), dim=3)
+
 
 
 
@@ -179,6 +183,7 @@ class RNN_module(pl.LightningModule):
         self.rnn = nn.GRU(input_size,hidden_size,num_layers,batch_first=True)
         
     def forward(self,x):
+
         output, hn = self.rnn(x)
         return output
 
@@ -188,11 +193,15 @@ class SpliceBert_module(pl.LightningModule):
         super().__init__() 
         self.model = AutoModel.from_pretrained(SPLICEBERT_PATH) 
         
-    def forward(self,seq):
+    def forward(self,raw_seq,histone_mark):
     # with torch.no_grad():
         # input (batch_size, 512)
-        last_hidden_state = self.model(seq).last_hidden_state # get hidden states from last layer
+        last_hidden_state = self.model(raw_seq).last_hidden_state # get hidden states from last layer
     #output (batch size, 512, 512)
+        if args.histone=="all":
+            last_hidden_state = torch.cat((last_hidden_state,torch.transpose(histone_mark, 1, 2)),dim=2)
+
+        
 
     # hiddens_states = model(input_ids, output_hidden_states=True).hidden_states
         return last_hidden_state
@@ -203,43 +212,53 @@ class Multi_site_model(pl.LightningModule):
         
 
         super().__init__()
-        hidden_size = 4
         self.save_hyperparameters()
         if args.single_site_type=="RNN":
             self.single_site_module = RNN_module(input_size,hidden_size,num_layers)
         if args.single_site_type=="SpliceBERT":
             self.single_site_module = SpliceBert_module()
+        
         self.dropout = nn.Dropout(p=dropout)
-        outer_rnn_input_size = hidden_size*input_length
-        outer_rnn_hidden_size = hidden_size*input_length
+        outer_rnn_input_size = 8*input_length
+        outer_rnn_hidden_size = 8*input_length
         self.outer_rnn_module = RNN_module(outer_rnn_input_size,outer_rnn_hidden_size,num_layers=1)
         self.sigmoid = nn.Sigmoid()
-        # self.linear1 = nn.Linear(hidden_size*input_length,outer_rnn_input_size)
+        self.linear1 = nn.Linear(hidden_size*input_length,outer_rnn_input_size)
         self.linear = nn.Linear(outer_rnn_hidden_size,1)
         self.attention = Self_attention(embed_dim = outer_rnn_hidden_size, num_heads = args.num_head)
         self.layer_norm = nn.LayerNorm(outer_rnn_hidden_size)
 
-    def forward_single_site_model(self,x,seq):
+    def forward_single_site_model(self,x):
+        DNA_seq = x["DNA_seq"].squeeze()
+        histone_mark = x["histone_mark"].squeeze()
+        raw_seq = x["raw_seq"].squeeze()
         if args.single_site_type=="RNN":
-            return self.single_site_module(x)
-        if args.single_site_type=="SpliceBERT":
-            return self.single_site_module(seq)
+            rnn_input = torch.concatenate((histone_mark, DNA_seq), axis = 1)
+            rnn_input = torch.transpose(rnn_input, 1, 2)
+            return self.single_site_module(rnn_input)
+        elif args.single_site_type=="SpliceBERT":
+            return self.single_site_module(raw_seq,histone_mark)
 
-        return None
+        return 1/0
 
-    def forward(self,x,position,seq):
+
+
+    def forward(self,x):
+
+        
         # print("multi-site model")
         # x_shape_list = list(x.shape)
         #[1,num,19,512]
-        x = torch.squeeze(x)
-        x = torch.transpose(x, 1, 2)
-        x = self.forward_single_site_model(x,seq)
+        position = x["position"]
+        # print(1/0)
+
+        x = self.forward_single_site_model(x)
         x = torch.flatten(x,start_dim=1)
-        # x = self.linear1(x)
+        x = self.linear1(x)
         x = self.outer_rnn_module(x)
 
         # attention,weights = self.attention(V = x, K = x,Q = x, position = position)      
-        #TODO
+        # # TODO
         # x = x+attention
         # x = self.layer_norm(x)  
 
@@ -349,8 +368,8 @@ class Multi_site_model(pl.LightningModule):
 #         x = self.sigmoid(x)
 #         return x
 
-class Single_site_lightning(pl.LightningModule):
-    def __init__(self,model,task,multi_model):
+class Lightning_module(pl.LightningModule):
+    def __init__(self,model,task,model_type):
         super().__init__()
         
         self.model = model
@@ -358,7 +377,10 @@ class Single_site_lightning(pl.LightningModule):
 
         self.loss_func = nn.BCELoss()
         self.task=task
-        self.multi_model=multi_model
+        if model_type=="single":
+            self.multi_model=False
+        if model_type=="multi":
+            self.multi_model=True
         return
     
     def cross_entropy(self,eps=1e-10):
@@ -377,17 +399,14 @@ class Single_site_lightning(pl.LightningModule):
     
     #log the computational graph at the beginning of the training
     def forward(self,x,position = None,seq = None):
-        if self.multi_model:
-            return self.model.forward(x,position,seq)
-        else:
-            return self.model.forward(x,seq)
-        # return self.model.forward(x,position,seq)
-    def forward_visualization(self,x,position = None,seq = None):
-        if self.multi_model:
-            return self.model.forward_visualization(x,position,seq)
-        else:
-            print("single model, cannot visualize")
-            return None
+
+        return self.model.forward(x)
+    # def forward_visualization(self,x,position = None,seq = None):
+    #     if self.multi_model:
+    #         return self.model.forward_visualization(x,position,seq)
+    #     else:
+    #         print("single model, cannot visualize")
+    #         return None
 
     def get_correlation(self,y_true, y_pred):
         y_true= np.copy(y_true)
@@ -479,64 +498,72 @@ class Single_site_lightning(pl.LightningModule):
         print("pearson correlation: rho {} num_idx_true {}".format(pearson, num_idx_true))
 
         return
-                    
-    def validation_epoch_end(self, step_outputs):
-        print("---------------validation epoch end------------------")
-        
+
+
+    def _epoch_end(self,step_outputs):
         lst = []
         lst_y= []
         for i in step_outputs:
-            j = np.array(i["y_hat"])
-            j = np.squeeze(j)
-            lst+=list(j)
-            lst_y+=list(np.squeeze(np.array(i["y"])))
+            lst+=list(np.squeeze(np.array(i["y_hat"]), axis=1))
+            lst_y+=list(np.squeeze(np.array(i["y"]),axis = 1))
         step_outputs = np.array(lst)
         step_y = np.array(lst_y)
+        return step_outputs, step_y
+
+                    
+    def validation_epoch_end(self, step_outputs):
+        print("---------------validation epoch end------------------")
+        step_pred,step_y = self._epoch_end(step_outputs)
+
         print("validation splicing site number {}".format(step_y.shape))
-        
         print("validation evaluation ")
-        self.evaluate(step_outputs, step_y)
-        np.savetxt("valid.csv",np.vstack((step_outputs,step_y)).transpose(), delimiter=",", fmt='%s')
+        self.evaluate(step_pred, step_y)
+        np.savetxt("valid.csv",np.vstack((step_pred,step_y)).transpose(), delimiter=",", fmt='%s')
         return
     
     
     
     def training_epoch_end(self,step_outputs):
         print("---------------training epoch end------------------")
+        step_pred,step_y = self._epoch_end(step_outputs)
 
-        lst = []
-        lst_y= []
-        for i in step_outputs:
-            j = np.array(i["y_hat"])
-            j = np.squeeze(j)
-            lst+=list(j)
-            lst_y+=list(np.squeeze(np.array(i["y"])))
-        step_outputs = np.array(lst)
-        step_y = np.array(lst_y)
+        # lst = []
+        # lst_y= []
+        # for i in step_outputs:
+        #     j = np.array(i["y_hat"])
+        #     j = np.squeeze(j)
+        #     # print(j.type)
+        #     # print(j.shape)
+        #     lst+=list(j)
+        #     lst_y+=list(np.squeeze(np.array(i["y"])))
+        # step_outputs = np.array(lst)
+        # step_y = np.array(lst_y)
+
         print("training splicing site number {}".format(step_y.shape))
         # print(np.count_nonzero(step_y==0))
         print("training evaluation")
         # self.evaluate_single_site(step_outputs, step_y)
-        self.evaluate(step_outputs, step_y)
+        self.evaluate(step_pred, step_y)
 
         return
+    def test_step(self,batch,batch_idx):
+        return self.validation_step(batch, batch_idx)
+    def test_epoch_end(self,step_outputs):
+        return self.validation_epoch_end(step_outputs)
 
     def training_step(self, batch, batch_idx):
 
-        x, y,seq = batch['x'],batch['y'],batch['seq']
-        # x = x.type(self.dtype)
-        # y = y.type(self.dtype)
-        
+        x, y= batch['x'],batch['y']
         if self.multi_model:
             # print("multi-model")
-            position = batch['position']   
+
             # y_hat = self(x,position = position,seq = seq)
-            y_hat = self.forward(x,position = position,seq = seq)
+            y_hat = self.forward(x)
             y = torch.transpose(y, 0, 1)
             loss = self.loss_func(y_hat, y)*y.shape[0]
         else:
-            # y_hat = self(x,seq = seq)
-            y_hat = self.forward(x,position = position,seq = seq)
+            y_hat = self(x)
+            # y_hat = self.forward(x,position = position,seq = seq)
             y = y[:, None]
             loss = self.loss_func(y_hat, y)
 
@@ -549,21 +576,15 @@ class Single_site_lightning(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
 
-        x, y, seq = batch['x'],batch['y'],batch['seq']
-        # x = x.type(self.dtype)
-        # y = y.type(self.dtype)       
-
-        
-
+        x, y= batch['x'],batch['y']
         if self.multi_model:
-            position = batch['position']   
             # y_hat = self(x,position = position,seq = seq)
-            y_hat = self.forward(x,position = position,seq = seq)
+            y_hat = self.forward(x)
             y = torch.transpose(y, 0, 1)
             loss = self.loss_func(y_hat, y)*y.shape[0]
         else:
-            # y_hat = self(x,seq = seq)
-            y_hat = self.forward(x,position = position,seq = seq)
+            y_hat = self(x)
+            # y_hat = self.forward(x,position = position,seq = seq)
             y = y[:, None]
             loss = self.loss_func(y_hat, y)
         

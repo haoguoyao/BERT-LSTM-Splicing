@@ -13,6 +13,7 @@ from multiprocessing import Lock,Pool
 def get_gene_dict():
     with open("/rhome/ghao004/bigdata/lstm_splicing/genome/gencode.v42.primary_assembly.annotation.gtf",'r') as g:
         gene_dict = {}
+        exon_dict = {}
         for idx,line in enumerate(g.readlines()):
             if line.startswith("#"):
                 continue
@@ -44,13 +45,36 @@ def get_gene_dict():
                     if gene_type=="protein_coding" and transcript_type=="protein_coding" and level!="level 3":
                         
 
-                        if gene_id in gene_dict:
-                            gene_dict[gene_id].append((chromosome,start,end,gene_id,exon_id,strand))
+                        if transcript_name in exon_dict:
+                            exon_dict[transcript_name].append((chromosome,start,end,gene_id,exon_id,strand))
                         else:
-                            gene_dict[gene_id] = [(chromosome,start,end,gene_id,exon_id,strand)]
+                            exon_dict[transcript_name] = [(chromosome,start,end,gene_id,exon_id,strand)]
+        
+        for tx in exon_dict:
+            if len(exon_dict[tx])>2:
+                transcript=exon_dict[tx]
 
-        print("After loading, gene_dict size {}".format(len(gene_dict)))
-        return gene_dict    
+                # remove first and last exon
+                for exon in transcript[1:-1]:
+                    gene_id = exon[3]
+                    if gene_id in gene_dict:
+                        gene_dict[gene_id].append((exon[0],exon[1],exon[2],exon[3],exon[4],exon[5]))
+                    else:
+                        gene_dict[gene_id] = [(exon[0],exon[1],exon[2],exon[3],exon[4],exon[5])]
+
+
+                    # (exon[0],exon[1],exon[2],exon[3],exon[4])
+
+                    # if gene_type=="protein_coding" and transcript_type=="protein_coding" and level!="level 3":
+                        
+
+                    #     if gene_id in gene_dict:
+                    #         gene_dict[gene_id].append((chromosome,start,end,gene_id,exon_id,strand))
+                    #     else:
+                    #         gene_dict[gene_id] = [(chromosome,start,end,gene_id,exon_id,strand)]
+        # print("After loading, gene_dict size {}".format(len(exon_dict)))
+        # print("After loading, gene_dict size {}".format(len(gene_dict)))
+        return gene_dict
 
 
 #filter by the exon number of a gene
@@ -127,50 +151,57 @@ class generate_dataset:
 
 
 def do_one_gene(one_gene):
-    strand = one_gene[0][5]
-    if strand not in ["+","-"]:
-        print("strand information error")
-        print("strand is {}".format(strand))
-        return
-    
-    chromosome = one_gene[0][0]
-    gene_id = one_gene[0][3]
-    #to remove duplication
-    site_list = []
-    data_list = []
-    
-    #chromosome,start,end,gene_id,exon_id,strand
-    for exon in one_gene:
-        ystart = exon[1]
-        if args.task=='reg':
-            ystart = exon[1]-1
-        if exon[1] not in site_list:
-            splicing_site1 = (get_x_balance(args.cell_type,chromosome,exon[1],args.context_length,strand),get_y(args.cell_type,chromosome,ystart,strand,args.task),exon[1],strand,get_seq(chromosome,exon[1],255,strand))
-            data_list.append(splicing_site1)
-            site_list.append(exon[1])
-        if exon[2] not in site_list:
-            splicing_site2 = (get_x_balance(args.cell_type,chromosome,exon[2],args.context_length,strand),get_y(args.cell_type,chromosome,exon[2],strand,args.task),exon[2],strand,get_seq(chromosome,exon[2],255,strand))
-            data_list.append(splicing_site2)
-            site_list.append(exon[2])
-            
-
-    if len(data_list)>args.max_splicing_site_num:
-        return None
+    try:
+        strand = one_gene[0][5]
+        if strand not in ["+","-"]:
+            print("strand information error")
+            print("strand is {}".format(strand))
+            return
         
-    # sort the splicing site by upstreaming and downstreaming         
-    data_list.sort(key=lambda a: a[2])
-    if strand=="-":
-        data_list = data_list[::-1]
+        chromosome = one_gene[0][0]
+        gene_id = one_gene[0][3]
+        #to remove duplication
+        site_list = []
+        data_list = []
+        
+        #chromosome,start,end,gene_id,exon_id,strand
+        for exon in one_gene:
+            ystart = exon[1]
+            if args.task=='reg':
+                ystart = exon[1]-1
+            if exon[1] not in site_list:
+                histone_mark,DNA_seq = get_x_balance(args.cell_type,chromosome,exon[1],args.context_length,strand)
+                splicing_site1 = {"histone_mark":histone_mark,"DNA_seq":DNA_seq,"y":get_y(args.cell_type,chromosome,ystart,strand,args.task),"position":exon[1],"strand":strand,"raw_seq":get_seq(chromosome,exon[1],255,strand)}
+                data_list.append(splicing_site1)
+                site_list.append(exon[1])
+            if exon[2] not in site_list:
+                histone_mark,DNA_seq = get_x_balance(args.cell_type,chromosome,exon[2],args.context_length,strand)
+                splicing_site2 = {"histone_mark":histone_mark,"DNA_seq":DNA_seq,"y":get_y(args.cell_type,chromosome,exon[2],strand,args.task),"position":exon[2],"strand":strand,"raw_seq":get_seq(chromosome,exon[2],255,strand)}
+                data_list.append(splicing_site2)
+                site_list.append(exon[2])
+                
 
-    data_dct = {"data":data_list,"gene":gene_id,"chromosome":chromosome,"strand":strand}
-    return data_dct
+        if len(data_list)>args.max_splicing_site_num:
+            return None
+            
+        # sort the splicing site by upstreaming and downstreaming         
+        data_list.sort(key=lambda a: a["position"])
+        if strand=="-":
+            data_list = data_list[::-1]
+
+        data_dct = {"data":data_list,"gene":gene_id,"chromosome":chromosome,"strand":strand}
+        return data_dct
+    except Exception as e:
+        print(e)
+        print("error in {}".format(one_gene[0]))
+        return None
 
 
 # @nb.jit()
 def convert_from_exon_to_splicing_site(gene_exon_dict):
     dataset_generator_multi = generate_dataset(args.dataset_name+"_multisite")
     dataset_generator_single = generate_dataset(args.dataset_name+"_singlesite")
-    pool = Pool(processes=32)
+    pool = Pool(processes=16)
     gene_exon_lst = list(gene_exon_dict.values())
     for data_dct in pool.imap_unordered(do_one_gene, gene_exon_lst):
         if data_dct is None:
@@ -184,22 +215,24 @@ def convert_from_exon_to_splicing_site(gene_exon_dict):
 
 
 def save_as_multisite_data(dataset_generator,data_dct):
-    X_lst = []
+    histone_mark_lst = []
+    DNA_seq_lst = []
     Y_lst = []
     position_lst = []
     seq_lst = []
     
     for splicing_site in data_dct["data"]:
-        X_lst.append(splicing_site[0])
-        Y_lst.append(splicing_site[1])
-        position_lst.append(splicing_site[2])
-        seq_lst.append(splicing_site[4])
+        histone_mark_lst.append(splicing_site["histone_mark"])
+        DNA_seq_lst.append(splicing_site["DNA_seq"])
+        Y_lst.append(splicing_site["y"])
+        position_lst.append(splicing_site["position"])
+        seq_lst.append(splicing_site["raw_seq"])
         
     gene_id = data_dct["gene"]
     chromosome = data_dct["chromosome"]
     strand = data_dct["strand"]
     
-    dct = {"chr":chromosome, "X":X_lst,"Y":Y_lst,"position" :position_lst,"strand":strand,"gene_id":gene_id,"splicing_site_num":len(Y_lst),"seq":seq_lst}
+    dct = {"chr":chromosome, "histone_mark":histone_mark_lst,"DNA_seq":DNA_seq_lst,"Y":Y_lst,"position" :position_lst,"strand":strand,"gene_id":gene_id,"splicing_site_num":len(Y_lst),"raw_seq":seq_lst}
     
     path = dataset_generator.save_npz(dct)
     if gene_id == "ENSG00000257923.12":
@@ -215,7 +248,7 @@ def save_as_singlesite_data(dataset_generator,data_dct):
         # Y_lst.append(splicing_site[1])
         # position_lst.append(splicing_site[2])
         chromosome = data_dct["chromosome"]
-        dct = {"chr":chromosome,"X":splicing_site[0],"Y":splicing_site[1],"seq":splicing_site[4]}
+        dct = {"chr":chromosome,"histone_mark":splicing_site["histone_mark"],"DNA_seq":splicing_site["DNA_seq"],"Y":splicing_site["y"],"raw_seq":splicing_site["raw_seq"]}
         dataset_generator.save_npz(dct)
     return 
         
@@ -226,7 +259,7 @@ def get_args():
     parser.add_argument("--max_splicing_site_num",  type=int,default=512)
     parser.add_argument("--context_length",  type=int,default=256)
     parser.add_argument("--cell_type",  type=str,default="GM12878")
-    parser.add_argument("--dataset_prefix",  type=str,default="best_data_all")
+    parser.add_argument("--dataset_prefix",  type=str,default="structure_new3")
     
     args = parser.parse_args()
     return args
@@ -237,10 +270,10 @@ args = get_args()
 if __name__=="__main__":         
     
 
-    # gene_dict = get_gene_dict()
-    # filtered_gene_dict = filter_gene_dict(gene_dict)
-    # save_gene_dict(filtered_gene_dict,"gene_dict.npy")
-    filtered_gene_dict = np.load("gene_dict.npy",allow_pickle=True).item()
+    # filtered_gene_dict = get_gene_dict()
+    # # filtered_gene_dict = filter_gene_dict(gene_dict)
+    # save_gene_dict(filtered_gene_dict,"gene_dict_filtered.npy")
+    filtered_gene_dict = np.load("gene_dict_filtered.npy",allow_pickle=True).item()
     
     print("gene_dict_size {}".format(len(filtered_gene_dict)))
 

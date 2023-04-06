@@ -1,6 +1,6 @@
 
 from pytorch_lightning.callbacks import TQDMProgressBar
-from lstm_splicing_model import Single_site_lightning, Multi_site_model, Single_site_model
+from lstm_splicing_model import Lightning_module, Multi_site_model, Single_site_model
 import os
 import torch
 from torch import nn
@@ -47,7 +47,6 @@ def main():
         # in_channels = [64,64,64,64,64,64,64,64]
         # out_channels = [64,64,64,64,64,64,64,64]
 
-        # model = CNN_module2(in_channels[0], W = W, AR = AR,in_channels = in_channels,out_channels = out_channels, dropout=None)
         model = Single_site_model(512,args.input_channel,args.hidden_size,num_layers=3 ,dropout=args.dropout)
         data_module = Single_site_module(data_dir = args.data_path,batch_size = args.batch_size,num_workers = args.num_workers)
         
@@ -57,7 +56,7 @@ def main():
         
     
     print(model.parameters())
-    transformer = Single_site_lightning(model,args.task,args.multi_model)
+    transformer = Lightning_module(model,args.task,args.model)
 
     # if args.load_checkpoint!=None:
     #     print("load model from "+ args.load_checkpoint)
@@ -69,11 +68,9 @@ def main():
 
     print("----------using {}------------".format(args.device))
     
-    # trainer = pl.Trainer(accelerator="gpu",val_check_interval= 0.5,devices=-1,default_root_dir=args.checkpoint_dir,logger=logger,max_epochs=args.max_epochs)
     trainer = pl.Trainer(accelerator=args.device,val_check_interval= 0.5,default_root_dir=args.checkpoint_dir,logger=logger,max_epochs=args.max_epochs,callbacks=[TQDMProgressBar(refresh_rate=50)])
-
-
     # trainer = pl.Trainer(accelerator=args.device,precision='bf16',val_check_interval= 0.01)
+    
     trainer.fit(model=transformer,datamodule=data_module)
 
 

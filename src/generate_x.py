@@ -39,7 +39,7 @@ def one_hot_encode_X(Xd):
 
 
 
-@nb.jit
+# @nb.jit
 def reverse_sequence_lst(seq):
     reverse_dct = {"A":"T","T":"A","G":"C","C":"G","N":"N"}
     seq = seq[::-1]   
@@ -48,14 +48,14 @@ def reverse_sequence_lst(seq):
         sequence_lst[i] = reverse_dct[sequence_lst[i]]
     return sequence_lst
 
-# @nb.jit
+
 def reverse_histone_mark_lst(histone_mark_lst):
     for i in range(len(histone_mark_lst)):
         histone_mark_lst[i] = histone_mark_lst[i][::-1]
     return histone_mark_lst
 
 
-@nb.jit
+# @nb.jit
 def encode_sequence(sequence_lst):
     int_dct = {"N":0,"A":1,"T":2,"C":3,"G":4}
     for i in range(len(sequence_lst)):
@@ -66,7 +66,7 @@ def encode_sequence(sequence_lst):
     seq = np.transpose(seq)
     return seq
 
-def get_x_balance(cell_type,chromosome,site,genome_distance,strand,histone_modification=True):
+def get_x_balance(cell_type,chromosome,site,genome_distance,strand):
     if tempData.cell_type != cell_type:
         tempData.set(cell_type)
     histone_modification = tempData.histone_modification
@@ -82,25 +82,24 @@ def get_x_balance(cell_type,chromosome,site,genome_distance,strand,histone_modif
     else:
         print("error strand")
         return None
-    seq = encode_sequence(sequence_lst)
+    DNA_seq = encode_sequence(sequence_lst)
     
-    if histone_modification:
-        histone_mark_lst = []
-        for i in histone_type_lst:
-            one_histone = histone_modification[i].values(chromosome,site-genome_distance, site+genome_distance)
-            histone_mark_lst.append(one_histone)
 
-        if strand=="-":
-            histone_mark_lst = reverse_histone_mark_lst(histone_mark_lst)
-                
-        histone_mark = np.asarray(histone_mark_lst)
-        histone_mark = np.where(histone_mark < 4, histone_mark, 4)
-        # histone_mark = np.log10(histone_mark)*-1
+    histone_mark_lst = []
+    for i in histone_type_lst:
+        one_histone = histone_modification[i].values(chromosome,site-genome_distance, site+genome_distance)
+        histone_mark_lst.append(one_histone)
 
-        X = np.concatenate((histone_mark, seq), axis = 0)
-        return X
-    else:
-        return seq
+    if strand=="-":
+        histone_mark_lst = reverse_histone_mark_lst(histone_mark_lst)
+            
+    histone_mark = np.asarray(histone_mark_lst)
+    histone_mark = np.where(histone_mark < 4, histone_mark, 4)
+    # histone_mark = np.log10(histone_mark)*-1
+
+    # X = np.concatenate((histone_mark, seq), axis = 0)
+    return histone_mark,DNA_seq
+
     
 def get_original_seq(chromosome,site,genome_distance,strand):
 
