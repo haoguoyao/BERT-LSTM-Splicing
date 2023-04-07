@@ -35,6 +35,7 @@ def get_parser():
     parser.add_argument("--num_workers",  type=int,default=16)
     parser.add_argument("--learning_rate",  type=float,default=0.0001)
     parser.add_argument("--checkpoint_dir",  type=str,default="./checkpoints")
+    parser.add_argument("--raytune_name",  type=str)
     parser.add_argument("--load_checkpoint",  type=str,default=None)
     parser.add_argument("--dropout",  type=float,default=0.3)
 

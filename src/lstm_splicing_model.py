@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader, random_split
 from load_raw_data import SPLICEBERT_PATH
 import pytorch_lightning as pl
 from args import args
+from torch.nn import init
 from scipy.stats import spearmanr, pearsonr
 from sklearn.metrics import average_precision_score
 import scipy.sparse as ss
@@ -15,6 +16,7 @@ from torchmetrics.classification import BinaryAUROC,BinaryF1Score
 from torcheval.metrics.functional import binary_auprc
 from transformers import AutoTokenizer, AutoModel, AutoModelForMaskedLM, AutoModelForTokenClassification
 import matplotlib.pyplot as pyplot
+import torch.nn.utils.prune as prune
 
 class ResidualBlock(pl.LightningModule):
     def __init__(self,in_channel,out_channel,kernel_size = 11,dilation = 1):
@@ -45,15 +47,20 @@ class ResidualBlock(pl.LightningModule):
     
     
 class Single_site_model(pl.LightningModule):
-    def __init__(self,input_length,input_size,hidden_size,num_layers=3, dropout=None):
+    def __init__(self,input_length,input_size,hidden_size,num_layers=3, dropout=None,model_type = "GRU"):
         super().__init__() 
         if args.single_site_type=="RNN":
-            self.single_site_module = RNN_module(input_size,hidden_size,num_layers)
-            # self.linear1 = nn.Linear(hidden_size*input_length,1)
+            if model_type=="GRU":
+                self.single_site_module = GRU_module(input_size,hidden_size,num_layers)
+            if model_type=="LSTM":
+                self.single_site_module = LSTM_module(input_size,hidden_size,num_layers)
+
         if args.single_site_type=="SpliceBERT":
             self.single_site_module = SpliceBert_module()
-        # self.single_site_module = nn.GRU(input_size, hidden_size, num_layers,batch_first=True)
+
         self.linear1 = nn.Linear(hidden_size*input_length,1)
+        init.kaiming_normal_(self.linear1.weight, mode='fan_in')
+
         self.sigmoid = nn.Sigmoid()
         self.dropout = nn.Dropout(p=dropout)
 
@@ -81,7 +88,7 @@ class Single_site_model(pl.LightningModule):
 
 class Self_attention(nn.Module):
     
-    def __init__(self,embed_dim, num_heads):
+    def __init__(self,embed_dim, num_heads,absolute_position = False,relative_position = False):
         super(Self_attention, self).__init__()
         self.num_heads = num_heads
         self.embed_dim = embed_dim
@@ -90,7 +97,7 @@ class Self_attention(nn.Module):
         
         assert (self.head_dim*num_heads==embed_dim)
         
-        self.Q_linear= nn.Linear(self.embed_dim, self.head_dim*num_heads, bias = False)
+        self.Q_linear = nn.Linear(self.embed_dim, self.head_dim*num_heads, bias = False)
         self.K_linear = nn.Linear(self.embed_dim, self.head_dim*num_heads, bias = False)
         self.V_linear = nn.Linear(self.embed_dim, self.head_dim*num_heads, bias = False)
         # self.V_relative_linear = nn.Linear(1, self.head_dim*num_heads, bias = False)
@@ -98,8 +105,17 @@ class Self_attention(nn.Module):
         self.V_absolute_linear = nn.Linear(1, self.head_dim*num_heads, bias = False)
         self.K_absolute_linear = nn.Linear(1, self.head_dim*num_heads, bias = False)
         self.fc_out = nn.Linear(embed_dim,embed_dim)
-        self.absolute_position = args.absolute_position
-        self.relative_position = args.relative_position
+
+        init.kaiming_normal_(self.Q_linear.weight, mode='fan_in')
+        init.kaiming_normal_(self.K_linear.weight, mode='fan_in')
+        init.kaiming_normal_(self.V_linear.weight, mode='fan_in')
+        init.kaiming_normal_(self.K_relative_linear.weight, mode='fan_in')
+        init.kaiming_normal_(self.V_absolute_linear.weight, mode='fan_in')
+        init.kaiming_normal_(self.K_absolute_linear.weight, mode='fan_in')
+        init.kaiming_normal_(self.fc_out .weight, mode='fan_in')
+
+        self.absolute_position = absolute_position
+        self.relative_position = relative_position
 
 
     def forward(self,V,K,Q,position = None):
@@ -117,6 +133,7 @@ class Self_attention(nn.Module):
         V = V.reshape(N, V_len, self.num_heads, self.head_dim)
         K = K.reshape(N, K_len,self.num_heads, self.head_dim)
         Q = Q.reshape(N, Q_len,self.num_heads, self.head_dim)
+
         if self.absolute_position:
             absolute_position = torch.log(position+1)/10
             absolute_position = position.reshape(N, Q_len,1)
@@ -177,10 +194,29 @@ class Self_attention(nn.Module):
 
 
 
+class GRU_module(pl.LightningModule):
+    def __init__(self,input_size,hidden_size,num_layers=3):
+        super().__init__() 
+        self.rnn = nn.GRU(input_size,hidden_size,num_layers,batch_first=True)
+        
+    def forward(self,x):
+
+        output, hn = self.rnn(x)
+        return output
 class RNN_module(pl.LightningModule):
     def __init__(self,input_size,hidden_size,num_layers=3):
         super().__init__() 
         self.rnn = nn.GRU(input_size,hidden_size,num_layers,batch_first=True)
+        
+    def forward(self,x):
+
+        output, hn = self.rnn(x)
+        return output
+
+class LSTM_module(pl.LightningModule):
+    def __init__(self,input_size,hidden_size,num_layers=3):
+        super().__init__() 
+        self.rnn = nn.LSTM(input_size,hidden_size,num_layers,batch_first=True)
         
     def forward(self,x):
 
@@ -193,11 +229,41 @@ class SpliceBert_module(pl.LightningModule):
         super().__init__() 
         self.model = AutoModel.from_pretrained(SPLICEBERT_PATH) 
         
+        self.prune()
+        
+
+    def prune(self):
+        # print(self.model)
+        # print(list(self.model.encoder.named_parameters()))
+        # print(list(self.model.encoder.layer[0].attention.self.query))
+
+        for i in range(0,6):
+            parameters_to_prune = (
+                (self.model.encoder.layer[i].attention.self.query, 'weight'),
+                (self.model.encoder.layer[i].attention.self.key, 'weight'),
+                (self.model.encoder.layer[i].attention.self.value, 'weight'),
+                (self.model.encoder.layer[i].attention.output.dense, 'weight'),
+                # (self.model.encoder.layer[0].attention.self.query, 'bias'),
+                # (self.model.encoder.layer[0].attention.self.key, 'bias'),
+                # (self.model.encoder.layer[0].attention.self.value, 'bais'),
+                # (self.model.encoder.layer[0].attention.output.dense, 'bias'),
+
+            )
+
+            prune.global_unstructured(
+                parameters_to_prune,
+                pruning_method=prune.L1Unstructured,
+                amount=0.9,
+            )
+
+
+        return
+        
     def forward(self,raw_seq,histone_mark):
-    # with torch.no_grad():
+
         # input (batch_size, 512)
         last_hidden_state = self.model(raw_seq).last_hidden_state # get hidden states from last layer
-    #output (batch size, 512, 512)
+        #output (batch size, 512, 512)
         if args.histone=="all":
             last_hidden_state = torch.cat((last_hidden_state,torch.transpose(histone_mark, 1, 2)),dim=2)
 
@@ -208,24 +274,27 @@ class SpliceBert_module(pl.LightningModule):
 
     
 class Multi_site_model(pl.LightningModule):
-    def __init__(self,input_length,input_size,hidden_size,num_layers=3,dropout=0):
+    def __init__(self,input_length,input_size,hidden_size,num_layers=3,dropout=0,relative_position=False,absolute_position=False,outer_hidden_size = 4096):
         
 
         super().__init__()
         self.save_hyperparameters()
         if args.single_site_type=="RNN":
-            self.single_site_module = RNN_module(input_size,hidden_size,num_layers)
+            self.single_site_module = GRU_module(input_size,hidden_size,num_layers)
         if args.single_site_type=="SpliceBERT":
             self.single_site_module = SpliceBert_module()
         
         self.dropout = nn.Dropout(p=dropout)
-        outer_rnn_input_size = 8*input_length
-        outer_rnn_hidden_size = 8*input_length
+        outer_rnn_input_size = outer_hidden_size
+        outer_rnn_hidden_size = outer_hidden_size
         self.outer_rnn_module = RNN_module(outer_rnn_input_size,outer_rnn_hidden_size,num_layers=1)
         self.sigmoid = nn.Sigmoid()
         self.linear1 = nn.Linear(hidden_size*input_length,outer_rnn_input_size)
         self.linear = nn.Linear(outer_rnn_hidden_size,1)
-        self.attention = Self_attention(embed_dim = outer_rnn_hidden_size, num_heads = args.num_head)
+        init.kaiming_normal_(self.linear1.weight, mode='fan_in')
+        init.kaiming_normal_(self.linear.weight, mode='fan_in')
+
+        self.attention = Self_attention(embed_dim = outer_rnn_hidden_size, num_heads = args.num_head,absolute_position = absolute_position,relative_position = relative_position)
         self.layer_norm = nn.LayerNorm(outer_rnn_hidden_size)
 
     def forward_single_site_model(self,x):
@@ -238,19 +307,14 @@ class Multi_site_model(pl.LightningModule):
             return self.single_site_module(rnn_input)
         elif args.single_site_type=="SpliceBERT":
             return self.single_site_module(raw_seq,histone_mark)
-
+        print(args.single_site_type)
         return 1/0
 
 
 
     def forward(self,x):
 
-        
-        # print("multi-site model")
-        # x_shape_list = list(x.shape)
-        #[1,num,19,512]
         position = x["position"]
-        # print(1/0)
 
         x = self.forward_single_site_model(x)
         x = torch.flatten(x,start_dim=1)
@@ -369,11 +433,12 @@ class Multi_site_model(pl.LightningModule):
 #         return x
 
 class Lightning_module(pl.LightningModule):
-    def __init__(self,model,task,model_type):
+    def __init__(self,model,task,model_type,learning_rate = 0.0001):
         super().__init__()
         
         self.model = model
         self.model.cuda()
+        self.learning_rate = learning_rate
 
         self.loss_func = nn.BCELoss()
         self.task=task
@@ -479,11 +544,13 @@ class Lightning_module(pl.LightningModule):
         print("Accuracy {:.6}".format(self._accuracy(step_outputs,step_y)))
         binaryAUROC = BinaryAUROC(thresholds=None)
         binaryF1 = BinaryF1Score()
-        print("Binary F1 {:.6}".format(binaryF1(torch.from_numpy(step_outputs), torch.from_numpy(step_y))))
-        print("Binary AUROC {:.6}".format(binaryAUROC(torch.from_numpy(step_outputs), torch.from_numpy(step_y))))
-        
-        print("Binary AUPRC {:.6}".format(binary_auprc(torch.from_numpy(step_outputs), torch.from_numpy(step_y))))
-        return
+        F1 = binaryF1(torch.from_numpy(step_outputs), torch.from_numpy(step_y))
+        AUROC = binaryAUROC(torch.from_numpy(step_outputs), torch.from_numpy(step_y))
+        AUPRC = binary_auprc(torch.from_numpy(step_outputs), torch.from_numpy(step_y))
+        print("Binary F1 {:.6}".format(F1))
+        print("Binary AUROC {:.6}".format(AUROC))
+        print("Binary AUPRC {:.6}".format(AUPRC))
+        return {"F1":F1,"AUROC":AUROC,"AUPRC":AUPRC,"spearman":0,"pearson":0}
         
     def evaluate(self,step_outputs,step_y):
         if self.task=="reg":
@@ -497,7 +564,7 @@ class Lightning_module(pl.LightningModule):
         print("spearman correlation: rho {} num_idx_true {}".format(rho, num_idx_true))
         print("pearson correlation: rho {} num_idx_true {}".format(pearson, num_idx_true))
 
-        return
+        return {"spearman":rho[0], "pearson":pearson[0],"F1":0,"AUROC":0,"AUPRC":0}
 
 
     def _epoch_end(self,step_outputs):
@@ -527,10 +594,17 @@ class Lightning_module(pl.LightningModule):
         print("validation splicing site number {}".format(step_y.shape))
         print("validation evaluation ")
         loss = self.loss_func(step_pred,step_y)
-        self.evaluate(step_pred.numpy().squeeze(), step_y.numpy().squeeze())
+        result = self.evaluate(step_pred.numpy().squeeze(), step_y.numpy().squeeze())
         
         # np.savetxt("valid.csv",np.vstack((step_pred,step_y)).transpose(), delimiter=",", fmt='%s')
-        return {"val_loss":loss}
+        self.log("val_loss",loss)
+        self.log("val_spearman",result["spearman"])
+        self.log("val_pearson",result["pearson"])
+        self.log("val_F1",result["F1"])
+        self.log("val_AUROC",result["AUROC"])
+        self.log("val_AUPRC",result["AUPRC"])
+        return
+        # return {"loss":loss,"spearman":result["spearman"], "pearson":result["pearson"],"F1":result["F1"],"AUROC":result["AUROC"],"AUPRC":result["AUPRC"]}
     
     
     
@@ -539,11 +613,17 @@ class Lightning_module(pl.LightningModule):
         step_pred,step_y = self._epoch_end(step_outputs)
 
         print("training splicing site number {}".format(step_y.shape))
-        # print(np.count_nonzero(step_y==0))
         print("training evaluation")
-        # self.evaluate_single_site(step_outputs, step_y)
-        self.evaluate(step_pred, step_y)
-
+        loss = self.loss_func(step_pred,step_y)
+        result = self.evaluate(step_pred.numpy().squeeze(), step_y.numpy().squeeze())
+        
+        # np.savetxt("valid.csv",np.vstack((step_pred,step_y)).transpose(), delimiter=",", fmt='%s')
+        self.log("train_loss",loss)
+        self.log("train_spearman",result["spearman"])
+        self.log("train_pearson",result["pearson"])
+        self.log("train_F1",result["F1"])
+        self.log("train_AUROC",result["AUROC"])
+        self.log("train_AUPRC",result["AUPRC"])
         return
     def test_step(self,batch,batch_idx):
         return self.validation_step(batch, batch_idx)
@@ -591,11 +671,11 @@ class Lightning_module(pl.LightningModule):
         
         self.log("validation_loss_step", loss,on_step=True, on_epoch=False, prog_bar=True)
         self.log("validation_loss", loss,on_step=False, on_epoch=True, prog_bar=True)
-        return {"loss": loss, "y_hat": y_hat.detach().to("cpu"),"y":y.to("cpu")}
+        return {"val_loss": loss, "y_hat": y_hat.detach().to("cpu"),"y":y.to("cpu")}
         
         
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=args.learning_rate)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
         # optimizer = torch.optim.SGD(self.parameters(), lr=args.learning_rate, momentum=0.9)
         scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[25000,50000,100000], gamma=0.2)
         return [optimizer], [scheduler]
