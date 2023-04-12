@@ -47,7 +47,7 @@ class ResidualBlock(pl.LightningModule):
     
     
 class Single_site_model(pl.LightningModule):
-    def __init__(self,input_length,input_size,hidden_size,num_layers=3, dropout=None,model_type = "GRU"):
+    def __init__(self,input_length,input_size,hidden_size,num_layers=3, dropout=None,model_type = "GRU",prune_ratio = 0):
         super().__init__() 
         if args.single_site_type=="RNN":
             if model_type=="GRU":
@@ -55,8 +55,9 @@ class Single_site_model(pl.LightningModule):
             if model_type=="LSTM":
                 self.single_site_module = LSTM_module(input_size,hidden_size,num_layers)
 
+
         if args.single_site_type=="SpliceBERT":
-            self.single_site_module = SpliceBert_module()
+            self.single_site_module = SpliceBert_module(prune_ratio = prune_ratio)
 
         self.linear1 = nn.Linear(hidden_size*input_length,1)
         init.kaiming_normal_(self.linear1.weight, mode='fan_in')
@@ -225,10 +226,10 @@ class LSTM_module(pl.LightningModule):
 
 
 class SpliceBert_module(pl.LightningModule):
-    def __init__(self):
+    def __init__(self,prune_ratio = 0):
         super().__init__() 
         self.model = AutoModel.from_pretrained(SPLICEBERT_PATH) 
-        
+        self.pruning_ratio = prune_ratio
         self.prune()
         
 
@@ -243,17 +244,13 @@ class SpliceBert_module(pl.LightningModule):
                 (self.model.encoder.layer[i].attention.self.key, 'weight'),
                 (self.model.encoder.layer[i].attention.self.value, 'weight'),
                 (self.model.encoder.layer[i].attention.output.dense, 'weight'),
-                # (self.model.encoder.layer[0].attention.self.query, 'bias'),
-                # (self.model.encoder.layer[0].attention.self.key, 'bias'),
-                # (self.model.encoder.layer[0].attention.self.value, 'bais'),
-                # (self.model.encoder.layer[0].attention.output.dense, 'bias'),
 
             )
 
             prune.global_unstructured(
                 parameters_to_prune,
                 pruning_method=prune.L1Unstructured,
-                amount=0.9,
+                amount=self.pruning_ratio,
             )
 
 
@@ -274,7 +271,7 @@ class SpliceBert_module(pl.LightningModule):
 
     
 class Multi_site_model(pl.LightningModule):
-    def __init__(self,input_length,input_size,hidden_size,num_layers=3,dropout=0,relative_position=False,absolute_position=False,outer_hidden_size = 4096):
+    def __init__(self,input_length,input_size,hidden_size,num_layers=3,dropout=0,relative_position=False,absolute_position=False,outer_hidden_size = 4096,prune_ratio = 0):
         
 
         super().__init__()
@@ -282,7 +279,7 @@ class Multi_site_model(pl.LightningModule):
         if args.single_site_type=="RNN":
             self.single_site_module = GRU_module(input_size,hidden_size,num_layers)
         if args.single_site_type=="SpliceBERT":
-            self.single_site_module = SpliceBert_module()
+            self.single_site_module = SpliceBert_module(prune_ratio = prune_ratio)
         
         self.dropout = nn.Dropout(p=dropout)
         outer_rnn_input_size = outer_hidden_size

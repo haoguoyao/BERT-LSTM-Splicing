@@ -2,15 +2,10 @@ from pytorch_lightning.callbacks import TQDMProgressBar
 from lstm_splicing_model import Lightning_module, Multi_site_model, Single_site_model
 import os
 import torch
-from torch import nn
-import torch.nn.functional as F
-from torchvision import transforms
-from torch.utils.data import DataLoader, random_split
 import pytorch_lightning as pl
 from dataset import Single_site_module, Multi_site_module
 from args import args
 from pytorch_lightning.loggers import TensorBoardLogger
-
 from ray import air, tune
 from ray.air import session
 from ray.tune import CLIReporter
@@ -19,9 +14,11 @@ from ray.tune.integration.pytorch_lightning import TuneReportCallback,TuneReport
 tune.execution.ray_trial_executor.DEFAULT_GET_TIMEOUT = 10000
 
 def train_ray_tune(config):
+
+
     logger=TensorBoardLogger(save_dir=os.getcwd(), name="raytune", version="v1"),
     data_module = Single_site_module(data_dir = args.data_path,batch_size = args.batch_size,num_workers = args.num_workers)
-    model = Single_site_model(512,args.input_channel,config["hidden_size"],config["num_layers"] ,dropout=config["dropout"],model_type= config["model_type"])
+    model = Single_site_model(512,args.input_channel,config["hidden_size"],config["num_layers"] ,dropout=config["dropout"],model_type= config["model_type"],prune_ratio = config["prune_ratio"])
 
     transformer = Lightning_module(model,args.task,args.model,config["learning_rate"])
     
@@ -39,49 +36,79 @@ def train_ray_tune_multi(config):
     trainer.fit(model=transformer,datamodule=data_module)
 
 def ray_tune_main():
-    if args.task=="cls" and args.model=="single":
+    if args.task=="cls" and args.model=="single" and args.single_site_type!="SpliceBERT":
         config = {
             "hidden_size": tune.choice([16,32,64,128]),
             "model_type":tune.choice(["GRU","LSTM"]),
             "dropout": tune.choice([0, 0.15, 0.3,0.45]),
             "learning_rate": tune.loguniform(1e-4, 5*1e-3),
-            "num_layers": tune.choice([2, 3, 4])
+            "prune_ratio": tune.choice([0]),
+            "num_layers": tune.choice([2, 3, 4]),
+            "outer_hidden_size": tune.choice([0])
         }
-    if args.task=="cls" and args.model=="multi":
+    elif args.task=="cls" and args.model=="multi" and args.single_site_type!="SpliceBERT":
         config = {
             "hidden_size": tune.choice([32]),
             "model_type":tune.choice(["GRU"]),
             "dropout": tune.choice([0.2]),
-            "learning_rate": tune.loguniform(1e-5, 5*1e-3),
+            "learning_rate": tune.loguniform(1e-5, 1e-3),
+            "prune_ratio": tune.choice([0]),
             "num_layers": tune.choice([3]),
             "outer_hidden_size": tune.choice([1024, 2048, 4096])
         }
-    if args.task=="reg" and args.model=="multi":
+    elif args.task=="reg" and args.model=="multi" and args.single_site_type!="SpliceBERT":
         config = {
             "hidden_size": tune.choice([32,64,128,256]),
             "model_type":tune.choice(["GRU"]),
             "dropout": tune.choice([0]),
-            "learning_rate": tune.loguniform(5*1e-5, 1e-3),
+            "learning_rate": tune.loguniform(1e-6, 2*1e-4),
+            "prune_ratio": tune.choice([0]),
             "num_layers": tune.choice([3, 4, 5]),
             "outer_hidden_size": tune.choice([1024, 2048, 4096])
         }
-    if args.task=="reg" and args.model=="single":
+    elif args.task=="reg" and args.model=="single" and args.single_site_type!="SpliceBERT":
         config = {
-            "hidden_size": tune.choice([32,64,128,256,512]),
+            "hidden_size": tune.choice([64,128,256,512]),
             "model_type":tune.choice(["GRU","LSTM"]),
             "dropout": tune.choice([0]),
             "learning_rate": tune.loguniform(1e-4, 5*1e-3),
-            "num_layers": tune.choice([3, 4, 5])
+            "prune_ratio": tune.choice([0]),
+            "num_layers": tune.choice([ 4,5,6]),
+            "outer_hidden_size": tune.choice([0])
+        }
+
+
+
+    # splicebert
+    elif args.task=="cls" and args.model=="single" and args.single_site_type=="SpliceBERT":
+        config = {
+            "hidden_size": tune.choice([527]),
+            "model_type":tune.choice(["bert"]),
+            "dropout": tune.choice([0,0.1,0.2,0.3]),
+            "prune_ratio": tune.choice([0.1,0.2,0.3,0.4,0.5]),
+            "learning_rate": tune.loguniform(1e-4, 1e-3),
+            "num_layers": tune.choice([0]),
+            "outer_hidden_size": tune.choice([0])
+        }
+    elif args.task=="reg" and args.model=="single" and args.single_site_type=="SpliceBERT":
+        config = {
+            "hidden_size": tune.choice([527]),
+            "model_type":tune.choice(["bert"]),
+            "dropout": tune.choice([0]),
+            "prune_ratio": tune.choice([0.6,0.2,0.3,0.4,0.5]),
+            "learning_rate": tune.loguniform(1e-4, 1e-3),
+            "num_layers": tune.choice([0]),
+            "outer_hidden_size": tune.choice([0])
         }
     
 
-    scheduler = ASHAScheduler(max_t=20, grace_period=1, reduction_factor=2)
-    resources_per_trial = {"cpu": 7, "gpu": 1}
+    scheduler = ASHAScheduler(max_t=50, grace_period=8, reduction_factor=2)
+    resources_per_trial = {"cpu": 15, "gpu": 1}
     if args.model=="multi":
         train_fn_with_parameters = tune.with_parameters(train_ray_tune_multi)
     elif args.model=="single":
         train_fn_with_parameters = tune.with_parameters(train_ray_tune)
-    reporter = CLIReporter(parameter_columns=["model_type","hidden_size", "dropout","learning_rate","num_layers"],metric_columns=["loss","F1","AUROC","AUPRC","spearman","pearson"])
+    reporter = CLIReporter(parameter_columns=["model_type","hidden_size","prune_ratio","outer_hidden_size", "dropout","learning_rate","num_layers"],metric_columns=["loss","F1","AUROC","AUPRC","spearman","pearson"])
     
     tuner = tune.Tuner(
         tune.with_resources(
@@ -92,9 +119,10 @@ def ray_tune_main():
             metric="loss",
             mode="min",
             scheduler=scheduler,
-            num_samples=25,
+            num_samples=50,
         ),
         run_config=air.RunConfig(
+            local_dir="/rhome/ghao004/bigdata/lstm_splicing/raytune_result",
             name=args.raytune_name,
             progress_reporter=reporter,
         ),
