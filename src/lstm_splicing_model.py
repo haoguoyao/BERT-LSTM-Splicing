@@ -15,7 +15,11 @@ import scipy.sparse as ss
 from torchmetrics.classification import BinaryAUROC,BinaryF1Score
 from torcheval.metrics.functional import binary_auprc
 from transformers import AutoTokenizer, AutoModel, AutoModelForMaskedLM, AutoModelForTokenClassification
-import matplotlib.pyplot as pyplot
+import mpl_scatter_density
+import matplotlib.pyplot as plt
+from astropy.visualization import LogStretch
+from astropy.visualization.mpl_normalize import ImageNormalize
+norm = ImageNormalize(vmin=0., vmax=200, stretch=LogStretch())
 import torch.nn.utils.prune as prune
 
 class ResidualBlock(pl.LightningModule):
@@ -31,8 +35,7 @@ class ResidualBlock(pl.LightningModule):
         self.batch_normalization1 = torch.nn.BatchNorm1d(in_channel)
         self.pool = nn.MaxPool1d(2, stride=2)
         self.conv1dpool =torch.nn.Conv1d(in_channel,out_channel,2,stride = 2)
-        self.batch_normalization2 = torch.nn.BatchNorm1d(out_channel)
-        
+        self.batch_normalization2 = torch.nn.BatchNorm1d(out_channel)     
         
     def forward(self,x):
         for i in range(0,len(self.conv1ds)):
@@ -42,9 +45,7 @@ class ResidualBlock(pl.LightningModule):
             out =self.batch_normalization1(out)
             x = out+x
         return x
-
-
-    
+  
     
 class Single_site_model(pl.LightningModule):
     def __init__(self,input_length,input_size,hidden_size,num_layers=3, dropout=None,model_type = "GRU",prune_ratio = 0):
@@ -54,7 +55,6 @@ class Single_site_model(pl.LightningModule):
                 self.single_site_module = GRU_module(input_size,hidden_size,num_layers)
             if model_type=="LSTM":
                 self.single_site_module = LSTM_module(input_size,hidden_size,num_layers)
-
 
         if args.single_site_type=="SpliceBERT":
             self.single_site_module = SpliceBert_module(prune_ratio = prune_ratio)
@@ -89,19 +89,18 @@ class Single_site_model(pl.LightningModule):
 
 class Self_attention(nn.Module):
     
-    def __init__(self,embed_dim, num_heads,absolute_position = False,relative_position = False):
+    def __init__(self,embed_dim, num_heads,absolute_position,relative_position):
         super(Self_attention, self).__init__()
         self.num_heads = num_heads
         self.embed_dim = embed_dim
         self.head_dim = embed_dim // num_heads
 
-        
         assert (self.head_dim*num_heads==embed_dim)
         
         self.Q_linear = nn.Linear(self.embed_dim, self.head_dim*num_heads, bias = False)
         self.K_linear = nn.Linear(self.embed_dim, self.head_dim*num_heads, bias = False)
         self.V_linear = nn.Linear(self.embed_dim, self.head_dim*num_heads, bias = False)
-        # self.V_relative_linear = nn.Linear(1, self.head_dim*num_heads, bias = False)
+        self.V_relative_linear = nn.Linear(1, self.head_dim*num_heads, bias = False)
         self.K_relative_linear = nn.Linear(1, self.head_dim*num_heads, bias = False)
         self.V_absolute_linear = nn.Linear(1, self.head_dim*num_heads, bias = False)
         self.K_absolute_linear = nn.Linear(1, self.head_dim*num_heads, bias = False)
@@ -135,8 +134,22 @@ class Self_attention(nn.Module):
         K = K.reshape(N, K_len,self.num_heads, self.head_dim)
         Q = Q.reshape(N, Q_len,self.num_heads, self.head_dim)
 
+        position = position[0]
+        max_distance = position[-1]-position[0]
+        # print("position shape")
+        # print(position.shape)
+        # print(max_distance.shape)
+        # print(position.dim())
+        # print(max_distance.dim())
+
+        assert position.dim()==1
+
+
         if self.absolute_position:
             absolute_position = torch.log(position+1)/10
+            # absolute_position = position/max_distance
+
+            
             absolute_position = position.reshape(N, Q_len,1)
             absolute_position_V = self.V_absolute_linear(absolute_position)
             absolute_position_V = absolute_position_V.reshape(N, V_len, self.num_heads, self.head_dim)
@@ -145,26 +158,26 @@ class Self_attention(nn.Module):
             V = V + absolute_position_V
             K = K + absolute_position_K
            
-            
+        energy = torch.einsum("nqhd,nkhd->nhqk",[Q,K])    
         if self.relative_position:
             temp1 = position.reshape(N,Q_len,1)
             temp2 = position.reshape(N,1,K_len)
             relative_position = torch.abs(temp1-temp2)
-            relative_position = torch.log(relative_position+1)
+            
+
+            # relative_position = torch.log(relative_position+1)
+            relative_position = torch.clamp(relative_position, min=0, max=5000)/5000
+
+
             relative_position = relative_position.reshape(N, Q_len, K_len,1)
-            # relative_position_V = self.V_relative_linear(relative_position)
-            # relative_position_V = relative_position_V.reshape(N, Q_len, K_len,self.num_heads, self.head_dim)
-            # relative_position_V = relative_position_V.permute(0,3,1,2,4)
+            relative_position_V = self.V_relative_linear(relative_position)
+            relative_position_V = relative_position_V.reshape(N, Q_len, K_len,self.num_heads, self.head_dim)
+            relative_position_V = relative_position_V.permute(0,3,1,2,4)
             relative_position_K = self.K_relative_linear(relative_position)
             relative_position_K = relative_position_K.reshape(N, Q_len, K_len,self.num_heads, self.head_dim)
             relative_position_K = relative_position_K.permute(0,3,1,2,4)
             # shape: (N, num_head, Q_len, K_len, head_dims)
-            
-
-        energy = torch.einsum("nqhd,nkhd->nhqk",[Q,K])
-        if self.relative_position:
             attention_relation = torch.einsum("nqhd,nhqjd->nhqj",[Q,relative_position_K])
-
             energy = energy+attention_relation
             
 
@@ -176,10 +189,10 @@ class Self_attention(nn.Module):
         #out shape:(N, Q_len, num_head, head_dims)
         out = torch.einsum("nhql,nlhd->nqhd",[attention, V])
         
-        # if self.relative_position:
-        #     attention = attention.reshape(N,self.num_heads, Q_len, K_len,1)
-        #     add_relative_V = attention*relative_position_V
-        #     out = out+(add_relative_V).sum(dim=3).permute(0,2,1,3)
+        if self.relative_position:
+            attention = attention.reshape(N,self.num_heads, Q_len, K_len,1)
+            add_relative_V = attention*relative_position_V
+            out = out+(add_relative_V).sum(dim=3).permute(0,2,1,3)
 
 
         #attention shape:(N,num_heads, Q_len, K_len)
@@ -271,10 +284,11 @@ class SpliceBert_module(pl.LightningModule):
 
     
 class Multi_site_model(pl.LightningModule):
-    def __init__(self,input_length,input_size,hidden_size,num_layers=3,dropout=0,relative_position=False,absolute_position=False,outer_hidden_size = 4096,prune_ratio = 0):
-        
-
+    def __init__(self,input_length,input_size,hidden_size,num_layers=3,dropout=0,do_outer = "GRU",relative_position=False,absolute_position=False,outer_hidden_size = 4096,prune_ratio = 0,do_attention = False,do_norm = False):
         super().__init__()
+        self.do_attention = do_attention
+        self.do_norm = do_norm
+        self.do_outer = do_outer
         self.save_hyperparameters()
         if args.single_site_type=="RNN":
             self.single_site_module = GRU_module(input_size,hidden_size,num_layers)
@@ -284,20 +298,25 @@ class Multi_site_model(pl.LightningModule):
         self.dropout = nn.Dropout(p=dropout)
         outer_rnn_input_size = outer_hidden_size
         outer_rnn_hidden_size = outer_hidden_size
-        self.outer_rnn_module = RNN_module(outer_rnn_input_size,outer_rnn_hidden_size,num_layers=1)
+        self.outer_rnn_module = RNN_module(outer_rnn_input_size,outer_rnn_hidden_size,num_layers=2)
         self.sigmoid = nn.Sigmoid()
         self.linear1 = nn.Linear(hidden_size*input_length,outer_rnn_input_size)
         self.linear = nn.Linear(outer_rnn_hidden_size,1)
         init.kaiming_normal_(self.linear1.weight, mode='fan_in')
         init.kaiming_normal_(self.linear.weight, mode='fan_in')
 
-        self.attention = Self_attention(embed_dim = outer_rnn_hidden_size, num_heads = args.num_head,absolute_position = absolute_position,relative_position = relative_position)
-        self.layer_norm = nn.LayerNorm(outer_rnn_hidden_size)
+        self.attention = Self_attention(embed_dim = outer_rnn_hidden_size, num_heads = 1,absolute_position = absolute_position,relative_position = relative_position)
+        self.attention2 = Self_attention(embed_dim = outer_rnn_hidden_size, num_heads = 1,absolute_position = False,relative_position = False)
 
+        self.layer_norm = nn.LayerNorm(outer_rnn_hidden_size)
     def forward_single_site_model(self,x):
-        DNA_seq = x["DNA_seq"].squeeze()
-        histone_mark = x["histone_mark"].squeeze()
-        raw_seq = x["raw_seq"].squeeze()
+        DNA_seq = torch.squeeze(x["DNA_seq"],0)
+        histone_mark = torch.squeeze(x["histone_mark"],0)
+        raw_seq = torch.squeeze(x["raw_seq"],0)
+        # raw_seq = x["raw_seq"].squeeze()
+
+        # print(DNA_seq.shape)
+        # print(histone_mark.shape)
         if args.single_site_type=="RNN":
             rnn_input = torch.concatenate((histone_mark, DNA_seq), axis = 1)
             rnn_input = torch.transpose(rnn_input, 1, 2)
@@ -316,12 +335,22 @@ class Multi_site_model(pl.LightningModule):
         x = self.forward_single_site_model(x)
         x = torch.flatten(x,start_dim=1)
         x = self.linear1(x)
-        x = self.outer_rnn_module(x)
-
-        # attention,weights = self.attention(V = x, K = x,Q = x, position = position)      
-        # # TODO
-        # x = x+attention
-        # x = self.layer_norm(x)  
+        
+        if self.do_outer=="GRU":
+            x = self.outer_rnn_module(x)
+        if self.do_attention:
+            attention,weights = self.attention(V = x, K = x,Q = x, position = position)      
+            x = x+attention
+            x = self.layer_norm(x)  
+            attention,weights = self.attention2(V = x, K = x,Q = x, position = position)
+            x = x+attention   
+            
+        if self.do_norm:
+            x = self.layer_norm(x)  
+            
+            
+    
+        
 
         x = self.dropout(x)
         x = self.linear(x)
@@ -430,19 +459,21 @@ class Multi_site_model(pl.LightningModule):
 #         return x
 
 class Lightning_module(pl.LightningModule):
-    def __init__(self,model,task,model_type,learning_rate = 0.0001):
+    def __init__(self,model,task,model_type,learning_rate):
         super().__init__()
         
         self.model = model
         self.model.cuda()
         self.learning_rate = learning_rate
+        
 
-        self.loss_func = nn.BCELoss()
         self.task=task
         if model_type=="single":
             self.multi_model=False
+            self.loss_func = nn.BCELoss()
         if model_type=="multi":
             self.multi_model=True
+            self.loss_func = nn.BCELoss(reduction="sum")
         return
     
     def cross_entropy(self,eps=1e-10):
@@ -470,7 +501,7 @@ class Lightning_module(pl.LightningModule):
     #         print("single model, cannot visualize")
     #         return None
 
-    def get_correlation(self,y_true, y_pred):
+    def get_correlation(self,y_true, y_pred,epsilon = 1e-5):
         y_true= np.copy(y_true)
         y_pred_np = np.copy(y_pred)
         
@@ -508,25 +539,11 @@ class Lightning_module(pl.LightningModule):
             Y_true_lst.append(item['y'])
         Y_pred = torch.cat(Y_pred_lst, dim=0)
         Y_true = torch.cat(Y_true_lst, dim=0)
-
-
         #make the last dimention the 3 classes
         # print(Y_pred.shape)
         # print(Y_true.shape)
         return
 
-#         Y_true_acceptor =Y_true[:,:,1].flatten()
-#         Y_pred_acceptor =Y_pred[:,:,1].flatten()
-#         print(Y_pred[:,:,0].flatten())
-#         print(Y_pred_acceptor.shape)
-#         print("log auprc, topk1_acc")
-#         topk1_acc_a, auprc_a, threshold_a, num_idx_true_a = self.get_top1_statistics(np.asarray(Y_true_acceptor), np.asarray(Y_pred_acceptor))
-#         print("Acceptor: topk1_acc {} auprc {} threshold {} num_idx_true {}".format(topk1_acc_a, auprc_a, threshold_a, num_idx_true_a))
-#         rho_a, num_idx_true_a2 = self.get_correlation(np.asarray(Y_true_acceptor), np.asarray(Y_pred_acceptor))
-#         print("Acceptor correlation: rho {} num_idx_true {}".format(rho_a, num_idx_true_a2))
-        
-        
-#         return rho_a
     
     def _accuracy(self,result,target):
         count = 0.0
@@ -562,6 +579,31 @@ class Lightning_module(pl.LightningModule):
         print("pearson correlation: rho {} num_idx_true {}".format(pearson, num_idx_true))
 
         return {"spearman":rho[0], "pearson":pearson[0],"F1":0,"AUROC":0,"AUPRC":0}
+    def scatter(self,output,target,filename):
+        fig = plt.figure()
+        ax = fig.add_subplot(1, 1, 1, projection='scatter_density')
+        density= ax.scatter_density(target, output, norm=norm, cmap = plt.cm.viridis)
+        
+        # density= ax.scatter_density(target, output, color ="blue")
+
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        plt.xlabel("True SSE")
+        plt.ylabel("Predicted SSE")
+        fig.colorbar(density, label='Number of points per pixel')
+        fig.savefig("/rhome/ghao004/bigdata/lstm_splicing/src/"+filename+"scatter.png")
+
+
+
+        fig = plt.figure()
+        ax = fig.add_subplot(1, 1, 1)
+        ax.hist(target,bins=100)
+        fig.savefig("/rhome/ghao004/bigdata/lstm_splicing/src/"+filename+"true_histogram.png")
+        fig = plt.figure()
+        ax = fig.add_subplot(1, 1, 1)
+        ax.hist(output,bins=100)
+        fig.savefig("/rhome/ghao004/bigdata/lstm_splicing/src/"+filename+"output_histogram.png")
+        return
 
 
     def _epoch_end(self,step_outputs):
@@ -577,22 +619,24 @@ class Lightning_module(pl.LightningModule):
                 y_collection = torch.cat((y_collection,i["y"]),dim=0)
                 y_hat_collection = torch.cat((y_hat_collection,i["y_hat"]),dim=0)
 
-            # lst+=list(np.squeeze(np.array(i["y_hat"]), axis=1))
-            # lst_y+=list(np.squeeze(np.array(i["y"]),axis = 1))
-        # step_outputs = np.array(lst)
-        # step_y = np.array(lst_y)
         return y_hat_collection,y_collection
 
                     
     def validation_epoch_end(self, step_outputs):
         print("---------------validation epoch end------------------")
         step_pred,step_y= self._epoch_end(step_outputs)
+        
+        np.save('all_targets_validation.npy', step_y)
+        np.save('all_outputs_validation.npy', step_pred)
 
         print("validation splicing site number {}".format(step_y.shape))
         print("validation evaluation ")
-        loss = self.loss_func(step_pred,step_y)
+        loss_func = nn.BCELoss()
+        loss = loss_func(step_pred,step_y)
         result = self.evaluate(step_pred.numpy().squeeze(), step_y.numpy().squeeze())
         
+
+        self.scatter(step_pred.numpy().squeeze(),step_y.numpy().squeeze(),"validation")
         # np.savetxt("valid.csv",np.vstack((step_pred,step_y)).transpose(), delimiter=",", fmt='%s')
         self.log("val_loss",loss)
         self.log("val_spearman",result["spearman"])
@@ -608,11 +652,16 @@ class Lightning_module(pl.LightningModule):
     def training_epoch_end(self,step_outputs):
         print("---------------training epoch end------------------")
         step_pred,step_y = self._epoch_end(step_outputs)
+        np.save('all_targets_train.npy', step_y)
+        np.save('all_outputs_train.npy', step_pred)
 
         print("training splicing site number {}".format(step_y.shape))
         print("training evaluation")
-        loss = self.loss_func(step_pred,step_y)
+        loss_func = nn.BCELoss()
+        loss = loss_func(step_pred,step_y)
         result = self.evaluate(step_pred.numpy().squeeze(), step_y.numpy().squeeze())
+        self.scatter(step_pred.numpy().squeeze(),step_y.numpy().squeeze(),"train")
+
         
         # np.savetxt("valid.csv",np.vstack((step_pred,step_y)).transpose(), delimiter=",", fmt='%s')
         self.log("train_loss",loss)
@@ -630,19 +679,18 @@ class Lightning_module(pl.LightningModule):
     def training_step(self, batch, batch_idx):
 
         x, y= batch['x'],batch['y']
+        y_hat = self(x)
         if self.multi_model:
             # print("multi-model")
-
-            # y_hat = self(x,position = position,seq = seq)
-            y_hat = self.forward(x)
             y = torch.transpose(y, 0, 1)
-            loss = self.loss_func(y_hat, y)*y.shape[0]
         else:
-            y_hat = self(x)
-            # y_hat = self.forward(x,position = position,seq = seq)
             y = y[:, None]
-            loss = self.loss_func(y_hat, y)
 
+        #add mask to nan value
+        y_hat = torch.where(torch.isnan(y), torch.zeros_like(y), y_hat)
+        y = torch.where(torch.isnan(y), torch.zeros_like(y), y)
+
+        loss = self.loss_func(y_hat, y)
         self.log("train_loss_step", loss,on_step=True, on_epoch=False, prog_bar=True)
         self.log("train_loss", loss,on_step=False, on_epoch=True, prog_bar=True)
         
@@ -653,18 +701,16 @@ class Lightning_module(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
 
         x, y= batch['x'],batch['y']
+        y_hat = self(x)
         if self.multi_model:
-            # y_hat = self(x,position = position,seq = seq)
-            y_hat = self.forward(x)
             y = torch.transpose(y, 0, 1)
-            loss = self.loss_func(y_hat, y)*y.shape[0]
         else:
-            y_hat = self(x)
-            # y_hat = self.forward(x,position = position,seq = seq)
             y = y[:, None]
-            loss = self.loss_func(y_hat, y)
-        
-        # loss = self.loss_func(y_hat, y)
+
+
+        y_hat = torch.where(torch.isnan(y), torch.zeros_like(y), y_hat)
+        y = torch.where(torch.isnan(y), torch.zeros_like(y), y)
+        loss = self.loss_func(y_hat, y)
         
         self.log("validation_loss_step", loss,on_step=True, on_epoch=False, prog_bar=True)
         self.log("validation_loss", loss,on_step=False, on_epoch=True, prog_bar=True)

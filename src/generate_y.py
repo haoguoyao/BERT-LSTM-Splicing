@@ -17,8 +17,11 @@ class TempData:
             sse_file_url= '/rhome/ghao004/bigdata/lstm_splicing/process_data/bams/GM12878.filtered.SpliSER.tsv'
             fpkm_file_url= '/rhome/ghao004/bigdata/esprnn/detailed_fpkm.csv'
             self.fpkm_file = pd.read_csv(fpkm_file_url,sep=',')
-            sse_file = pd.read_csv(sse_file_url,sep='\t')
-            self.sse_file = sse_file.loc[(sse_file['Region'].isin(Train_Chromes+Valid_Chromes+Test_Chromes)) & (sse_file['Strand'].isin(strands))]
+            self.sse_file = pd.read_csv(sse_file_url,sep='\t')
+            self.sse_file = self.sse_file.loc[(self.sse_file['Region'].isin(Train_Chromes+Valid_Chromes+Test_Chromes)) & (self.sse_file['Strand'].isin(strands))]
+            print("before filtering sse ",self.sse_file.shape)
+            self.sse_file = self.sse_file.dropna(subset=['Gene'])
+            print("after filtering sse ",self.sse_file.shape)
 
 
         if cell_type=="HepG2":
@@ -27,16 +30,14 @@ class TempData:
 
 
 tempData = TempData()
-# print("loading sse file")
-
-# sse_file_url= '/rhome/ghao004/bigdata/lstm_splicing/process_data/bams/GM12878.filtered.SpliSER.tsv'
-# sse_file = pd.read_csv(sse_file_url,sep='\t')
-# sse_file = sse_file.loc[(sse_file['Region'].isin(Train_Chromes+Valid_Chromes+Test_Chromes)) & (sse_file['Strand'].isin(strands))]
-
-# alpha_threshold = sse_file["alpha_count"].quantile(69800.0/163999)
-# print("-------quantile alpha count--------")
-# print("alpha threshold is {}".format(alpha_threshold))
-# print(sse_file[sse_file["alpha_count"]>=alpha_threshold].shape)
+def get_sse_by_gene_id(cell_type,gene_id):
+    print("get sse by gene id")
+    if tempData.cell_type != cell_type:
+        tempData.set(cell_type)
+    sse_file = tempData.sse_file
+    sse_row = sse_file.loc[(sse_file['Gene']==gene_id)]
+    print("finish sse by gene id")
+    return sse_row
 
 def get_y(cell_type,chromosome,site,strand,task):
     if tempData.cell_type != cell_type:
@@ -48,6 +49,8 @@ def get_y(cell_type,chromosome,site,strand,task):
         sse_row = sse_file.loc[(sse_file['Region']==chromosome)& (sse_file['Site']==site)& (sse_file['Strand']==strand)]
 
         if (sse_row.shape)[0]==0:
+            # print("region",chromosome,"site",site,"strand",strand,"not found in sse file")
+
 
             Y = 0
         elif (sse_row.shape)[0]>1:
@@ -56,15 +59,16 @@ def get_y(cell_type,chromosome,site,strand,task):
             return 
         else:
             read_count = sse_row.iloc[0,:].loc["alpha_count"]+sse_row.iloc[0,:].loc["beta1_count"]+sse_row.iloc[0,:].loc["beta2Simple_count"]
-            if read_count>=10:
+            # print("region",chromosome,"site",site,"strand",strand,"found")
+
+            if read_count>=20:
                 Y = sse_row.iloc[0,:].loc["SSE"]
             else:
-                Y = 0
+                # print("region",chromosome,"site",site,"strand",strand,"has less than 20 reads")
+                # when read not enough, set sse to nan value
+                Y = np.NAN
 
     elif task=="cls":
-        # for col in tempData.fpkm_file.columns:
-        #     print(col)
-
         fpkm_filtered1 = tempData.fpkm_file.loc[(tempData.fpkm_file['site_start']==site)|(tempData.fpkm_file['site_end']==site)]
         fpkm_row = fpkm_filtered1.loc[(fpkm_filtered1['chromosome']==chromosome)& (fpkm_filtered1['strand']==strand)]
 
@@ -77,7 +81,5 @@ def get_y(cell_type,chromosome,site,strand,task):
                 Y = 1
             else:
                 Y = 0
-
-
     return Y
 

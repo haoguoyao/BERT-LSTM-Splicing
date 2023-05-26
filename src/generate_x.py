@@ -57,7 +57,10 @@ def reverse_histone_mark_lst(histone_mark_lst):
 
 # @nb.jit
 def encode_sequence(sequence_lst):
-    int_dct = {"N":0,"A":1,"T":2,"C":3,"G":4}
+
+    #warning
+    int_dct = {"N":0,"A":1,"C":2,"G":3,"T":4}
+    # int_dct = {"N":0,"A":1,"T":2,"C":3,"G":4}
     for i in range(len(sequence_lst)):
         sequence_lst[i] = int_dct[sequence_lst[i]]
         
@@ -98,6 +101,7 @@ def get_x_balance(cell_type,chromosome,site,genome_distance,strand):
     # histone_mark = np.log10(histone_mark)*-1
 
     # X = np.concatenate((histone_mark, seq), axis = 0)
+
     return histone_mark,DNA_seq
 
     
