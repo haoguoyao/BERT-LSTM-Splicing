@@ -1,5 +1,5 @@
 from pytorch_lightning.callbacks import TQDMProgressBar
-from lstm_splicing_model import Lightning_module, Multi_site_model, Single_site_model
+from lstm_splicing_model import Lightning_module, Multi_site_model, Single_site_model, CNN_module2
 import os
 import torch
 import pytorch_lightning as pl
@@ -177,12 +177,23 @@ def main():
     model= None
 
     if args.model=="single":
+
+
+
+        W = [11,11,11,11,11,11,11,11]
+        AR = [1,1,1,1,4,4,4,4]
+        in_channels = [32,32,32,32,32,32,32,32]
+        out_channels = [32,32,32,32,32,32,32,32]
+        # in_channels = [64,64,64,64,64,64,64,64]
+        # out_channels = [64,64,64,64,64,64,64,64]
+
+        # model = CNN_module2(in_channels[0], W = W, AR = AR,in_channels = in_channels,out_channels = out_channels, dropout=None)
         model = Single_site_model(512,args.input_channel,args.hidden_size,num_layers=3 ,dropout=args.dropout)
         data_module = Single_site_module(data_dir = args.data_path,batch_size = args.batch_size,num_workers = args.num_workers)
         
     if args.model=="multi":
         config = {
-            "hidden_size": 256,
+            "hidden_size": 527,
             "model_type":"GRU",
             "dropout": 0,
             "learning_rate":5*1e-6,

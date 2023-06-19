@@ -293,13 +293,14 @@ class Multi_site_model(pl.LightningModule):
         if args.single_site_type=="RNN":
             self.single_site_module = GRU_module(input_size,hidden_size,num_layers)
         if args.single_site_type=="SpliceBERT":
-            self.single_site_module = SpliceBert_module(prune_ratio = prune_ratio)
+            self.single_site_module = SpliceBert_module(prune_ratio = 0.2)
         
         self.dropout = nn.Dropout(p=dropout)
         outer_rnn_input_size = outer_hidden_size
         outer_rnn_hidden_size = outer_hidden_size
         self.outer_rnn_module = RNN_module(outer_rnn_input_size,outer_rnn_hidden_size,num_layers=2)
         self.sigmoid = nn.Sigmoid()
+        
         self.linear1 = nn.Linear(hidden_size*input_length,outer_rnn_input_size)
         self.linear = nn.Linear(outer_rnn_hidden_size,1)
         init.kaiming_normal_(self.linear1.weight, mode='fan_in')
@@ -333,7 +334,9 @@ class Multi_site_model(pl.LightningModule):
         position = x["position"]
 
         x = self.forward_single_site_model(x)
+        
         x = torch.flatten(x,start_dim=1)
+
         x = self.linear1(x)
         
         if self.do_outer=="GRU":
@@ -420,43 +423,50 @@ class Multi_site_model(pl.LightningModule):
 #         x = self.sigmoid(x)
 #         return x
         
-# class CNN_module2(pl.LightningModule):
-#     def __init__(self, conv_channel, W, AR, in_channels, out_channels,dropout=None):
-#         # super(CNN_module,self).__init__()
-#         super().__init__()
+class CNN_module2(pl.LightningModule):
+    def __init__(self, conv_channel, W, AR, in_channels, out_channels,dropout=None):
+        # super(CNN_module,self).__init__()
+        super().__init__()
 
-#         self.conv1 = nn.Conv1d(args.input_channel,conv_channel,1,padding = 'same')
-#         self.conv2 = nn.Conv1d(conv_channel,conv_channel,1,padding = 'same')
-#         self.residual_blocks = [ResidualBlock(in_channel, out_channel, a, b).cuda() for in_channel, out_channel,a, b in zip(in_channels, out_channels, W, AR)]
+        self.conv1 = nn.Conv1d(args.input_channel,conv_channel,1,padding = 'same')
+        self.residual_blocks = [ResidualBlock(in_channel, out_channel, a, b).cuda() for in_channel, out_channel,a, b in zip(in_channels, out_channels, W, AR)]
         
         
-#         self.conv1x1s = [nn.Conv1d(conv_channel,conv_channel,2,stride = 2).cuda()]
-#         self.convs = [nn.Conv1d(conv_channel,conv_channel,1,padding = 'same').cuda() for i in range(len(W)) if (((i+1) % 4 == 0) or ((i+1) == len(W)))]
+        self.conv1x1s = [nn.Conv1d(conv_channel,conv_channel,2,stride = 2).cuda()]
+        self.convs = [nn.Conv1d(conv_channel,conv_channel,1,padding = 'same').cuda() for i in range(len(W)) if (((i+1) % 4 == 0) or ((i+1) == len(W)))]
         
         
-#         if args.device=='cuda':
-#             for i in self.residual_blocks:
-#                 i.cuda()
-#             for j in self.convs:
-#                 j.cuda()
+        if args.device=='cuda':
+            for i in self.residual_blocks:
+                i.cuda()
+            for j in self.convs:
+                j.cuda()
 
-#         self.batch_normalization = torch.nn.BatchNorm1d(conv_channel)
-#         self.relu = torch.nn.ReLU()
-#         self.conv_final = nn.Conv1d(out_channels[-1],3,1,padding = 'same')
-#         self.linear1 = nn.Linear(3*512,1)
-#         self.sigmoid = nn.Sigmoid()
+        self.batch_normalization = torch.nn.BatchNorm1d(conv_channel)
+        self.relu = torch.nn.ReLU()
+        self.conv_final = nn.Conv1d(out_channels[-1],1,1,padding = 'same')
+        self.linear1 = nn.Linear(32,1)
+        self.sigmoid = nn.Sigmoid()
         
-#     def forward(self, x):
-#         x = self.conv1(x)
-#         skip = self.conv2(x)
-#         idx = 0
-#         for i, cnn in enumerate(self.residual_blocks):
-#             x = cnn(x)
-#         x = self.conv_final(x)
-#         x = torch.flatten(x,start_dim=1)
-#         x = self.linear1(x)
-#         x = self.sigmoid(x)
-#         return x
+    def forward(self, x):
+        DNA_seq = x["DNA_seq"]
+        histone_mark = x["histone_mark"]
+        x = torch.concatenate((histone_mark, DNA_seq), axis = 1)
+
+        x = self.conv1(x)
+        for i, cnn in enumerate(self.residual_blocks):
+            x = cnn(x)
+
+        x = self.conv_final(x)
+
+        x = torch.flatten(x,start_dim=1)
+
+        # x = x[:,128]
+        out = x[:,112:144]
+        x = self.linear1(out)
+        x = self.sigmoid(x)
+
+        return x
 
 class Lightning_module(pl.LightningModule):
     def __init__(self,model,task,model_type,learning_rate):
@@ -473,7 +483,7 @@ class Lightning_module(pl.LightningModule):
             self.loss_func = nn.BCELoss()
         if model_type=="multi":
             self.multi_model=True
-            self.loss_func = nn.BCELoss(reduction="sum")
+            self.loss_func = nn.BCELoss(reduction='sum')
         return
     
     def cross_entropy(self,eps=1e-10):
@@ -501,9 +511,11 @@ class Lightning_module(pl.LightningModule):
     #         print("single model, cannot visualize")
     #         return None
 
-    def get_correlation(self,y_true, y_pred,epsilon = 1e-5):
+    def get_correlation(self,y_true, y_pred,epsilon = 0.000001):
         y_true= np.copy(y_true)
         y_pred_np = np.copy(y_pred)
+        y_true = y_true.flatten()
+        y_pred_np = y_pred_np.flatten()
         
         y_true[np.isnan(y_true)] = -1
 
@@ -512,7 +524,7 @@ class Lightning_module(pl.LightningModule):
         num_idx_true = []
 
         for psi_t in [0, 0.1, 0.2, 0.3]:
-            idx_true = np.nonzero(np.logical_and(y_true >= psi_t, y_true < 1.0-psi_t))
+            idx_true = np.nonzero(np.logical_and(y_true >= psi_t+epsilon, y_true <= 1.0-psi_t))
 
             idx_true = idx_true[0]
             rho1, pval1 = spearmanr(y_true[idx_true], y_pred[idx_true])
@@ -526,10 +538,43 @@ class Lightning_module(pl.LightningModule):
             rho.append(rho1)
             pearson.append(rho2)
             num_idx_true.append(np.size(idx_true))
-        return rho,pearson, num_idx_true
+        psi_t = 0
+        idx_true = np.nonzero(np.logical_and(y_true >= psi_t+epsilon, y_true <= 1.0-psi_t))[0]
+
+        return rho,pearson, num_idx_true, y_true[idx_true],y_pred[idx_true]
     
 
 
+
+
+    # def print_corr(self,target, output, eps=1e-5):
+    #     y_true = np.asarray(target.flatten())
+    #     y_pred = np.asarray(output.flatten())
+    #     rho = []
+    #     pearson = []
+    #     num_idx_true = []
+
+    #     for psi_t in [0,0.1,0.2,0.3]:
+
+    #         print("psi_t", psi_t)
+    #         idx_true = np.nonzero(np.logical_and(y_true >= psi_t+eps, y_true <= 1.0-psi_t))[0]
+    #         c = y_true[idx_true]
+    #         d = y_pred[idx_true]
+    #         rho1, pval1 = spearmanr(c, d)
+    #         rho.append(rho1)
+    #         rho2,_ = pearsonr(c, d)
+    #         pearson.append(rho2)
+    #         num_idx_true.append(np.size(idx_true))
+
+    #     print("spearmanr correlation")
+    #     print(rho)
+    #     print("pearson correlation")
+    #     print(pearson)
+    #     print("number of samples")
+    #     print(num_idx_true)
+    #     psi_t = 0
+    #     idx_true = np.nonzero(np.logical_and(y_true >= psi_t+eps, y_true <= 1.0-psi_t))[0]
+    #     return y_true[idx_true],y_pred[idx_true]
     def print_on_epoch_end(self,validation_step_outputs):
         
         Y_pred_lst =[]
@@ -574,11 +619,11 @@ class Lightning_module(pl.LightningModule):
 
     def evaluate_site_reg(self,step_outputs,step_y):
 
-        rho,pearson, num_idx_true = self.get_correlation(step_y,step_outputs)
+        rho,pearson, num_idx_true,y,outputs = self.get_correlation(step_y,step_outputs)
         print("spearman correlation: rho {} num_idx_true {}".format(rho, num_idx_true))
         print("pearson correlation: rho {} num_idx_true {}".format(pearson, num_idx_true))
 
-        return {"spearman":rho[0], "pearson":pearson[0],"F1":0,"AUROC":0,"AUPRC":0}
+        return {"spearman":rho[0], "pearson":pearson[0],"F1":0,"AUROC":0,"AUPRC":0,"y":y,"output":outputs}
     def scatter(self,output,target,filename):
         fig = plt.figure()
         ax = fig.add_subplot(1, 1, 1, projection='scatter_density')
@@ -631,19 +676,22 @@ class Lightning_module(pl.LightningModule):
 
         print("validation splicing site number {}".format(step_y.shape))
         print("validation evaluation ")
-        loss_func = nn.BCELoss()
-        loss = loss_func(step_pred,step_y)
+
+
+        loss = self.loss_func(step_pred,step_y)
         result = self.evaluate(step_pred.numpy().squeeze(), step_y.numpy().squeeze())
         
 
-        self.scatter(step_pred.numpy().squeeze(),step_y.numpy().squeeze(),"validation")
+        self.scatter(result["output"],result["y"],"validation")
         # np.savetxt("valid.csv",np.vstack((step_pred,step_y)).transpose(), delimiter=",", fmt='%s')
-        self.log("val_loss",loss)
-        self.log("val_spearman",result["spearman"])
-        self.log("val_pearson",result["pearson"])
-        self.log("val_F1",result["F1"])
-        self.log("val_AUROC",result["AUROC"])
-        self.log("val_AUPRC",result["AUPRC"])
+        
+        
+        # self.log("val_loss",loss)
+        # self.log("val_spearman",result["spearman"])
+        # self.log("val_pearson",result["pearson"])
+        # self.log("val_F1",result["F1"])
+        # self.log("val_AUROC",result["AUROC"])
+        # self.log("val_AUPRC",result["AUPRC"])
         return
         # return {"loss":loss,"spearman":result["spearman"], "pearson":result["pearson"],"F1":result["F1"],"AUROC":result["AUROC"],"AUPRC":result["AUPRC"]}
     
@@ -696,7 +744,7 @@ class Lightning_module(pl.LightningModule):
         
         # step learning rate scheduler
         self.lr_schedulers().step()
-        return {"loss": loss, "y_hat": y_hat.detach().to("cpu"),"y":y.to("cpu")}
+        return {"loss": loss/y.shape[0], "y_hat": y_hat.detach().to("cpu"),"y":y.to("cpu")}
 
     def validation_step(self, batch, batch_idx):
 
@@ -708,13 +756,17 @@ class Lightning_module(pl.LightningModule):
             y = y[:, None]
 
 
+
+
         y_hat = torch.where(torch.isnan(y), torch.zeros_like(y), y_hat)
         y = torch.where(torch.isnan(y), torch.zeros_like(y), y)
+
+
         loss = self.loss_func(y_hat, y)
         
         self.log("validation_loss_step", loss,on_step=True, on_epoch=False, prog_bar=True)
         self.log("validation_loss", loss,on_step=False, on_epoch=True, prog_bar=True)
-        return {"val_loss": loss, "y_hat": y_hat.detach().to("cpu"),"y":y.to("cpu")}
+        return {"val_loss": loss/y.shape[0], "y_hat": y_hat.detach().to("cpu"),"y":y.to("cpu")}
         
         
     def configure_optimizers(self):

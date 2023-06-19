@@ -69,19 +69,22 @@ def encode_sequence(sequence_lst):
     seq = np.transpose(seq)
     return seq
 
-def get_x_balance(cell_type,chromosome,site,genome_distance,strand):
+def get_x_balance(cell_type,chromosome,site,genome_distance,strand,a):
     if tempData.cell_type != cell_type:
         tempData.set(cell_type)
     histone_modification = tempData.histone_modification
     
     seq = genome[chromosome][site-genome_distance:site+genome_distance]
-    
-    
 
     if strand=="+":
+        
         sequence_lst = list(seq)
+        # print("+")
+        # print(len(sequence_lst))
+        # print(sequence_lst[255-2:257+2])
     elif strand=="-":
         sequence_lst = reverse_sequence_lst(seq)
+        # print(sequence_lst[255-2:257+2])
     else:
         print("error strand")
         return None

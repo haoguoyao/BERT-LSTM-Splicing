@@ -31,12 +31,10 @@ class TempData:
 
 tempData = TempData()
 def get_sse_by_gene_id(cell_type,gene_id):
-    print("get sse by gene id")
     if tempData.cell_type != cell_type:
         tempData.set(cell_type)
     sse_file = tempData.sse_file
     sse_row = sse_file.loc[(sse_file['Gene']==gene_id)]
-    print("finish sse by gene id")
     return sse_row
 
 def get_y(cell_type,chromosome,site,strand,task):
